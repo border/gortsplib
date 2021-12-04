@@ -349,7 +349,8 @@ func (ss *ServerSession) run() {
 				for trackID, track := range ss.announcedTracks {
 					rr := track.rtcpReceiver.Report(now)
 					if rr != nil {
-						ss.WritePacketRTCP(trackID, rr)
+						byts, _ := rr.Marshal()
+						ss.WritePacketRTCP(trackID, byts)
 					}
 				}
 

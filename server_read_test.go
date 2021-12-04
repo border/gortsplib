@@ -1642,7 +1642,7 @@ func TestServerReadAdditionalInfos(t *testing.T) {
 
 	buf, err := (&rtp.Packet{
 		Header: rtp.Header{
-			Version:        0x80,
+			Version:        2,
 			PayloadType:    96,
 			SequenceNumber: 556,
 			Timestamp:      984512368,
@@ -1678,7 +1678,7 @@ func TestServerReadAdditionalInfos(t *testing.T) {
 
 	buf, err = (&rtp.Packet{
 		Header: rtp.Header{
-			Version:        0x80,
+			Version:        2,
 			PayloadType:    96,
 			SequenceNumber: 87,
 			Timestamp:      756436454,

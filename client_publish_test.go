@@ -18,6 +18,39 @@ import (
 	"github.com/aler9/gortsplib/pkg/rtcpreceiver"
 )
 
+var testRTPPacket = rtp.Packet{
+	Header: rtp.Header{
+		Version:     2,
+		PayloadType: 97,
+		CSRC:        []uint32{},
+	},
+	Payload: []byte{0x01, 0x02, 0x03, 0x04},
+}
+
+var testRTPPacketMarshaled = func() []byte {
+	byts, _ := testRTPPacket.Marshal()
+	return byts
+}()
+
+var testRTCPPacket = rtcp.SourceDescription{
+	Chunks: []rtcp.SourceDescriptionChunk{
+		{
+			Source: 1234,
+			Items: []rtcp.SourceDescriptionItem{
+				{
+					Type: rtcp.SDESCNAME,
+					Text: "myname",
+				},
+			},
+		},
+	},
+}
+
+var testRTCPPacketMarshaled = func() []byte {
+	byts, _ := testRTCPPacket.Marshal()
+	return byts
+}()
+
 func TestClientPublishSerial(t *testing.T) {
 	for _, transport := range []string{
 		"udp",
@@ -138,31 +171,37 @@ func TestClientPublishSerial(t *testing.T) {
 				_, err = conn.Write(bb.Bytes())
 				require.NoError(t, err)
 
-				// client -> server
+				// client -> server (RTP)
 				if transport == "udp" {
 					buf := make([]byte, 2048)
 					n, _, err := l1.ReadFrom(buf)
 					require.NoError(t, err)
-					require.Equal(t, []byte{0x01, 0x02, 0x03, 0x04}, buf[:n])
+					var pkt rtp.Packet
+					err = pkt.Unmarshal(buf[:n])
+					require.NoError(t, err)
+					require.Equal(t, testRTPPacket, pkt)
 				} else {
 					var f base.InterleavedFrame
 					f.Payload = make([]byte, 2048)
 					err = f.Read(br)
 					require.NoError(t, err)
 					require.Equal(t, 0, f.Channel)
-					require.Equal(t, []byte{0x01, 0x02, 0x03, 0x04}, f.Payload)
+					var pkt rtp.Packet
+					err = pkt.Unmarshal(f.Payload)
+					require.NoError(t, err)
+					require.Equal(t, testRTPPacket, pkt)
 				}
 
 				// server -> client (RTCP)
 				if transport == "udp" {
-					l2.WriteTo([]byte{0x05, 0x06, 0x07, 0x08}, &net.UDPAddr{
+					l2.WriteTo(testRTCPPacketMarshaled, &net.UDPAddr{
 						IP:   net.ParseIP("127.0.0.1"),
 						Port: th.ClientPorts[1],
 					})
 				} else {
 					base.InterleavedFrame{
 						Channel: 1,
-						Payload: []byte{0x05, 0x06, 0x07, 0x08},
+						Payload: testRTCPPacketMarshaled,
 					}.Write(&bb)
 					_, err = conn.Write(bb.Bytes())
 					require.NoError(t, err)
@@ -194,9 +233,9 @@ func TestClientPublishSerial(t *testing.T) {
 					v := TransportTCP
 					return &v
 				}(),
-				OnPacketRTCP: func(trackID int, payload []byte) {
+				OnPacketRTCP: func(trackID int, pkt rtcp.Packet) {
 					require.Equal(t, 0, trackID)
-					require.Equal(t, []byte{0x05, 0x06, 0x07, 0x08}, payload)
+					require.Equal(t, &testRTCPPacket, pkt)
 					close(recvDone)
 				},
 			}
@@ -216,16 +255,14 @@ func TestClientPublishSerial(t *testing.T) {
 				c.Wait()
 			}()
 
-			err = c.WritePacketRTP(0,
-				[]byte{0x01, 0x02, 0x03, 0x04})
+			err = c.WritePacketRTP(0, &testRTPPacket)
 			require.NoError(t, err)
 
 			<-recvDone
 			c.Close()
 			<-done
 
-			err = c.WritePacketRTP(0,
-				[]byte{0x01, 0x02, 0x03, 0x04})
+			err = c.WritePacketRTP(0, &testRTPPacket)
 			require.Error(t, err)
 		})
 	}
@@ -380,8 +417,7 @@ func TestClientPublishParallel(t *testing.T) {
 				defer t.Stop()
 
 				for range t.C {
-					err := c.WritePacketRTP(0,
-						[]byte{0x01, 0x02, 0x03, 0x04})
+					err := c.WritePacketRTP(0, &testRTPPacket)
 					if err != nil {
 						return
 					}
@@ -537,8 +573,7 @@ func TestClientPublishPauseSerial(t *testing.T) {
 			require.NoError(t, err)
 			defer c.Close()
 
-			err = c.WritePacketRTP(0,
-				[]byte{0x01, 0x02, 0x03, 0x04})
+			err = c.WritePacketRTP(0, &testRTPPacket)
 			require.NoError(t, err)
 
 			_, err = c.Pause()
@@ -547,8 +582,7 @@ func TestClientPublishPauseSerial(t *testing.T) {
 			_, err = c.Record()
 			require.NoError(t, err)
 
-			err = c.WritePacketRTP(0,
-				[]byte{0x01, 0x02, 0x03, 0x04})
+			err = c.WritePacketRTP(0, &testRTPPacket)
 			require.NoError(t, err)
 		})
 	}
@@ -685,8 +719,7 @@ func TestClientPublishPauseParallel(t *testing.T) {
 				defer t.Stop()
 
 				for range t.C {
-					err := c.WritePacketRTP(0,
-						[]byte{0x01, 0x02, 0x03, 0x04})
+					err := c.WritePacketRTP(0, &testRTPPacket)
 					if err != nil {
 						return
 					}
@@ -802,7 +835,10 @@ func TestClientPublishAutomaticProtocol(t *testing.T) {
 		err = f.Read(br)
 		require.NoError(t, err)
 		require.Equal(t, 0, f.Channel)
-		require.Equal(t, []byte{0x01, 0x02, 0x03, 0x04}, f.Payload)
+		var pkt rtp.Packet
+		err = pkt.Unmarshal(f.Payload)
+		require.NoError(t, err)
+		require.Equal(t, testRTPPacket, pkt)
 
 		req, err = readRequest(br)
 		require.NoError(t, err)
@@ -827,8 +863,7 @@ func TestClientPublishAutomaticProtocol(t *testing.T) {
 	require.NoError(t, err)
 	defer c.Close()
 
-	err = c.WritePacketRTP(0,
-		[]byte{0x01, 0x02, 0x03, 0x04})
+	err = c.WritePacketRTP(0, &testRTPPacket)
 	require.NoError(t, err)
 }
 
@@ -925,14 +960,17 @@ func TestClientPublishRTCPReport(t *testing.T) {
 		buf := make([]byte, 2048)
 		n, _, err := l1.ReadFrom(buf)
 		require.NoError(t, err)
-		rr.ProcessPacketRTP(time.Now(), buf[:n])
+		var pkt rtp.Packet
+		err = pkt.Unmarshal(buf[:n])
+		require.NoError(t, err)
+		rr.ProcessPacketRTP(time.Now(), &pkt)
 
 		buf = make([]byte, 2048)
 		n, _, err = l2.ReadFrom(buf)
 		require.NoError(t, err)
-		pkt, err := rtcp.Unmarshal(buf[:n])
+		packets, err := rtcp.Unmarshal(buf[:n])
 		require.NoError(t, err)
-		sr, ok := pkt[0].(*rtcp.SenderReport)
+		sr, ok := packets[0].(*rtcp.SenderReport)
 		require.True(t, ok)
 		require.Equal(t, &rtcp.SenderReport{
 			SSRC:        753621,
@@ -941,7 +979,7 @@ func TestClientPublishRTCPReport(t *testing.T) {
 			PacketCount: 1,
 			OctetCount:  4,
 		}, sr)
-		rr.ProcessPacketRTCP(time.Now(), buf[:n])
+		rr.ProcessPacketRTCP(time.Now(), packets[0])
 
 		close(reportReceived)
 
@@ -970,7 +1008,7 @@ func TestClientPublishRTCPReport(t *testing.T) {
 	require.NoError(t, err)
 	defer c.Close()
 
-	byts, _ := (&rtp.Packet{
+	err = c.WritePacketRTP(0, &rtp.Packet{
 		Header: rtp.Header{
 			Version:        2,
 			Marker:         true,
@@ -980,8 +1018,7 @@ func TestClientPublishRTCPReport(t *testing.T) {
 			SSRC:           753621,
 		},
 		Payload: []byte{0x01, 0x02, 0x03, 0x04},
-	}).Marshal()
-	err = c.WritePacketRTP(0, byts)
+	})
 	require.NoError(t, err)
 
 	<-reportReceived
@@ -1068,14 +1105,14 @@ func TestClientPublishIgnoreTCPRTPPackets(t *testing.T) {
 
 		base.InterleavedFrame{
 			Channel: 0,
-			Payload: []byte{0x01, 0x02, 0x03, 0x04},
+			Payload: testRTPPacketMarshaled,
 		}.Write(&bb)
 		_, err = conn.Write(bb.Bytes())
 		require.NoError(t, err)
 
 		base.InterleavedFrame{
 			Channel: 1,
-			Payload: []byte{0x05, 0x06, 0x07, 0x08},
+			Payload: testRTCPPacketMarshaled,
 		}.Write(&bb)
 		_, err = conn.Write(bb.Bytes())
 		require.NoError(t, err)
@@ -1098,10 +1135,10 @@ func TestClientPublishIgnoreTCPRTPPackets(t *testing.T) {
 			v := TransportTCP
 			return &v
 		}(),
-		OnPacketRTP: func(trackID int, payload []byte) {
+		OnPacketRTP: func(trackID int, pkt *rtp.Packet) {
 			t.Errorf("should not happen")
 		},
-		OnPacketRTCP: func(trackID int, payload []byte) {
+		OnPacketRTCP: func(trackID int, pkt rtcp.Packet) {
 			close(rtcpReceived)
 		},
 	}
