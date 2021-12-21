@@ -1,11 +1,13 @@
 package gortsplib
 
 import (
-	"encoding/binary"
 	"net"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/pion/rtcp"
+	"github.com/pion/rtp"
 
 	"github.com/aler9/gortsplib/pkg/liberrors"
 	"github.com/aler9/gortsplib/pkg/ringbuffer"
@@ -82,14 +84,14 @@ func (h *multicastHandler) runWriter() {
 	}
 }
 
-func (h *multicastHandler) writeRTP(payload []byte) {
+func (h *multicastHandler) writePacketRTP(payload []byte) {
 	h.writeBuffer.Push(trackTypePayload{
 		isRTP:   true,
 		payload: payload,
 	})
 }
 
-func (h *multicastHandler) writeRTCP(payload []byte) {
+func (h *multicastHandler) writePacketRTCP(payload []byte) {
 	h.writeBuffer.Push(trackTypePayload{
 		isRTP:   false,
 		payload: payload,
@@ -298,47 +300,53 @@ func (st *ServerStream) readerSetInactive(ss *ServerSession) {
 }
 
 // WritePacketRTP writes a RTP packet to all the readers of the stream.
-func (st *ServerStream) WritePacketRTP(trackID int, payload []byte) {
-	if len(payload) >= 8 {
-		track := st.trackInfos[trackID]
-
-		sequenceNumber := binary.BigEndian.Uint16(payload[2:4])
-		atomic.StoreUint32(&track.lastSequenceNumber, uint32(sequenceNumber))
-
-		timestamp := binary.BigEndian.Uint32(payload[4:8])
-		atomic.StoreUint32(&track.lastTimeRTP, timestamp)
-		atomic.StoreInt64(&track.lastTimeNTP, time.Now().Unix())
-
-		ssrc := binary.BigEndian.Uint32(payload[8:12])
-		atomic.StoreUint32(&track.lastSSRC, ssrc)
+func (st *ServerStream) WritePacketRTP(trackID int, pkt *rtp.Packet) {
+	byts, err := pkt.Marshal()
+	if err != nil {
+		return
 	}
+
+	track := st.trackInfos[trackID]
+
+	atomic.StoreUint32(&track.lastSequenceNumber,
+		uint32(pkt.Header.SequenceNumber))
+
+	atomic.StoreUint32(&track.lastTimeRTP, pkt.Header.Timestamp)
+	atomic.StoreInt64(&track.lastTimeNTP, time.Now().Unix())
+
+	atomic.StoreUint32(&track.lastSSRC, pkt.Header.SSRC)
 
 	st.mutex.RLock()
 	defer st.mutex.RUnlock()
 
 	// send unicast
 	for r := range st.readersUnicast {
-		r.WritePacketRTP(trackID, payload)
+		r.writePacketRTP(trackID, byts)
 	}
 
 	// send multicast
 	if st.multicastHandlers != nil {
-		st.multicastHandlers[trackID].writeRTP(payload)
+		st.multicastHandlers[trackID].writePacketRTP(byts)
 	}
 }
 
 // WritePacketRTCP writes a RTCP packet to all the readers of the stream.
-func (st *ServerStream) WritePacketRTCP(trackID int, payload []byte) {
+func (st *ServerStream) WritePacketRTCP(trackID int, pkt rtcp.Packet) {
+	byts, err := pkt.Marshal()
+	if err != nil {
+		return
+	}
+
 	st.mutex.RLock()
 	defer st.mutex.RUnlock()
 
 	// send unicast
 	for r := range st.readersUnicast {
-		r.WritePacketRTCP(trackID, payload)
+		r.writePacketRTCP(trackID, byts)
 	}
 
 	// send multicast
 	if st.multicastHandlers != nil {
-		st.multicastHandlers[trackID].writeRTCP(payload)
+		st.multicastHandlers[trackID].writePacketRTCP(byts)
 	}
 }
